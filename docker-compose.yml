@@ -1,0 +1,102 @@
+services:
+  nginx:
+    build: ./nginx
+    container_name: ocr_nginx
+    ports:
+      - "80:80"
+    depends_on:
+      - app-1
+      - app-2
+    networks:
+      - ocr_network
+
+  app-1: &app_base
+    build: ./ocr_app
+    restart: always
+    expose:
+      - "5000"
+    env_file:
+      - .env
+    # <<< THE FIX IS HERE (Part 1) >>>
+    # DNS configuration is a per-service setting.
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    depends_on:
+      - redis
+      - db
+      - ollama
+    volumes:
+      - ./ocr_app:/app
+    networks:
+      - ocr_network
+
+  app-2:
+    <<: *app_base
+
+  celery_worker-1: &celery_base
+    build: ./ocr_app
+    restart: always
+    command: ["celery", "-A", "app.celery", "worker", "--loglevel=info"]
+    env_file:
+      - .env
+    # <<< THE FIX IS HERE (Part 2) >>>
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    depends_on:
+      - app-1
+      - app-2
+      - redis
+    volumes:
+      - ./ocr_app:/app
+    networks:
+      - ocr_network
+
+  celery_worker-2:
+    <<: *celery_base
+
+  redis:
+    image: "redis:alpine"
+    container_name: ocr_redis
+    networks:
+      - ocr_network
+
+  db:
+    image: postgres:15-alpine
+    container_name: ocr_db
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ocr_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    build: ./ollama
+    container_name: ocr_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # <<< THE FIX IS HERE (Part 3) >>>
+    # Add DNS to the Ollama service as well, as it needs to pull models.
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    networks:
+      - ocr_network
+
+volumes:
+  postgres_data:
+  ollama_data:
+
+# This is a simple network definition; the DNS settings have been moved to the services.
+networks:
+  ocr_network:
+    driver: bridge
